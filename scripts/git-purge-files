@@ -1,35 +1,108 @@
 #!/usr/bin/perl
 #
-# Purge files from Git repositories.
-#
-# Attention:
-#     You want to run this script on a case sensitive file-system (e.g.
-#     ext4 on Linux). Otherwise the resulting Git repository will not
-#     contain changes that modify the casing of file paths.
-#
-# Usage:
-#     git-purge-files [path-regex1] [path-regex2] ...
-#
-# Examples:
-#    Remove the file "test.bin" from all directories:
-#    git-purge-path "/test.bin$"
-#
-#    Remove all "*.bin" files from all directories:
-#    git-purge-path "\.bin$"
-#
-#    Remove all files in the "/foo" directory:
-#    git-purge-path "^/foo/$"
-#
-# Author: Lars Schneider, https://github.com/larsxschneider
+# Purge files from Git repositories
 #
 
+use 5.010;
 use strict;
 use warnings;
+use Getopt::Std;
 
+sub usage() {
+    print STDERR <<END;
+NAME
+       git-purge-files - Purge files from Git repositories
+
+SYNOPSIS
+       git-purge-files [-c] [-d] [-h] [<path-regex>] ...
+
+
+DESCRIPTION
+       This command purges files from a Git history by rewriting all
+       commits. Please note that this changes all commit hashes in the
+       history and therefore all branches and tags.
+
+       You want to run this script on a case sensitive file-system (e.g.
+       ext4 on Linux). Otherwise the resulting Git repository will not
+       contain changes that modify the casing of file paths.
+
+OPTIONS
+       <path-regex>...
+           A list of regular expression that defines what files should
+           be purged from the history. Use a `/` to anchor a path to the
+           root of the repository.
+
+       -c
+           Enable checking mode. The script will run the underlaying
+           `git fast-export | git fast-import` command without any
+           modifing the data stream and check if the input repository
+           matches the output repository.
+
+           See here for more details:
+           https://public-inbox.org/git/CABPp-BFLJ48BZ97Y9mr4i3q7HMqjq18cXMgSYdxqD1cMzH8Spg\@mail.gmail.com/
+
+       -d
+           Enable diff mode. This makes the underlaying `git fast-export`
+           output only the file differences between two commits. This
+           mode is quicker but more error prone. It is not recommended
+           to production usage.
+
+       -h
+           This help.
+
+EXAMPLES
+       o   Remove the file "test.bin" from all directories:
+
+               \$ git-purge-path "/test.bin$"
+
+       o   Remove all "*.bin" files from all directories:
+
+               \$ git-purge-path "\.bin$"
+
+       o   Remove all files in the "/foo" directory:
+
+               \$ git-purge-path "^/foo/$"
+END
+    exit(1);
+}
+
+our($opt_h, $opt_d, $opt_c);
+getopts("hdc") or usage();
+usage if $opt_h;
+
+my $export_opts = "--all --no-data --progress=10000 --signed-tags=warn-strip --tag-of-filtered-object=rewrite --use-done-feature";
+my $import_opts = "--done --force --quiet";
+
+if (not $opt_d) {
+    $export_opts .= " --full-tree"
+}
+
+if ($opt_c) {
+    say "Checking fast-export/fast-import... ";
+    my @before = `git rev-list --all`;
+    system("git fast-export $export_opts | git fast-import $import_opts");
+    my @after = `git rev-list --all`;
+
+    if (@before ~~ @after) {
+        say "Check successful!";
+        exit 0;
+    } else {
+        say "Check failed!";
+        say "Git fast-export/fast-import did not create the expected result.";
+        say "Try to use the `-c` option!" if (not $opt_d);
+        print array_diff(@before, @after);
+        exit 1;
+    }
+}
+
+exit 0 if (@ARGV == 0);
+
+say "Purging files...\n";
 my $path_regex = join( "|", @ARGV );
+my $start_time = time;
 
-open( my $pipe_in, "git fast-export --progress=10000 --no-data --all --signed-tags=warn-strip --tag-of-filtered-object=rewrite |" ) or die $!;
-open( my $pipe_out, "| git fast-import --force --quiet" ) or die $!;
+open( my $pipe_in, "git fast-export $export_opts |" ) or die $!;
+open( my $pipe_out, "| git fast-import $import_opts" ) or die $!;
 
 LOOP: while ( my $cmd = <$pipe_in> ) {
     my $data = "";
@@ -44,3 +117,6 @@ LOOP: while ( my $cmd = <$pipe_in> ) {
     }
     print {$pipe_out} $cmd . $data;
 }
+
+my $duration = time - $start_time;
+say "Done! Execution time: $duration s";
